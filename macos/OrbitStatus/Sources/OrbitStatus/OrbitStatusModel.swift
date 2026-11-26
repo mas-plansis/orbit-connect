@@ -38,7 +38,7 @@ final class OrbitStatusModel: ObservableObject {
     private let api = OrbitAPIClient()
     private let networkMonitor = NetworkChangeMonitor()
     private var token: String?
-    private var timer: Timer?
+    private var pollingTask: Task<Void, Never>?
     private var refreshing = false
     private var verifyingEgress = false
     private var discoveryRetry = DiscoveryRetrySchedule()
@@ -113,12 +113,12 @@ final class OrbitStatusModel: ObservableObject {
             updateState()
             return
         }
+        verifyExternalEgress()
         guard let token else {
             status = nil
             updateState()
             return
         }
-        verifyExternalEgress()
         guard !loading, !refreshing, discoveryRetry.canAttempt() else { return }
         Task {
             refreshing = true
@@ -248,11 +248,14 @@ final class OrbitStatusModel: ObservableObject {
     }
 
     private func startPolling() {
-        timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
+        pollingTask?.cancel()
+        pollingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard self != nil else { return }
+                self?.refresh()
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+            }
         }
-        refresh()
     }
 
     private func perform(_ action: @escaping () async throws -> Void) async {

@@ -23,17 +23,20 @@ public struct ProtectedApplication: Codable, Equatable, Identifiable, Sendable {
     public let id: UUID
     public var bundleIdentifier: String
     public var displayName: String
+    public var applicationPath: String?
     public var routeMode: ApplicationRouteMode
 
     public init(
         id: UUID = UUID(),
         bundleIdentifier: String,
         displayName: String,
+        applicationPath: String? = nil,
         routeMode: ApplicationRouteMode = .trustedExit
     ) {
         self.id = id
         self.bundleIdentifier = bundleIdentifier
         self.displayName = displayName
+        self.applicationPath = applicationPath
         self.routeMode = routeMode
     }
 
@@ -41,6 +44,7 @@ public struct ProtectedApplication: Codable, Equatable, Identifiable, Sendable {
         case id
         case bundleIdentifier
         case displayName
+        case applicationPath
         case routeMode
     }
 
@@ -49,6 +53,7 @@ public struct ProtectedApplication: Codable, Equatable, Identifiable, Sendable {
         id = try values.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         bundleIdentifier = try values.decode(String.self, forKey: .bundleIdentifier)
         displayName = try values.decodeIfPresent(String.self, forKey: .displayName) ?? ""
+        applicationPath = try values.decodeIfPresent(String.self, forKey: .applicationPath)
         routeMode = try values.decodeIfPresent(ApplicationRouteMode.self, forKey: .routeMode)
             ?? .trustedExit
     }
@@ -76,7 +81,7 @@ public struct EgressControlConfiguration: Codable, Equatable, Sendable {
         expectedFinalAddresses: [String] = [],
         applications: [ProtectedApplication] = [],
         destinations: [ProtectedDestination] = [],
-        confirmationLifetime: TimeInterval = 12
+        confirmationLifetime: TimeInterval = 30
     ) {
         self.isEnabled = isEnabled
         self.expectedFinalAddresses = expectedFinalAddresses
@@ -105,6 +110,10 @@ public struct EgressControlConfiguration: Codable, Equatable, Sendable {
                     displayName: application.displayName.trimmingCharacters(
                         in: .whitespacesAndNewlines
                     ),
+                    applicationPath: application.applicationPath.flatMap {
+                        let path = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                        return path.isEmpty ? nil : path
+                    },
                     routeMode: application.routeMode
                 )
             )
@@ -116,7 +125,10 @@ public struct EgressControlConfiguration: Codable, Equatable, Sendable {
             else { return }
             result.append(ProtectedDestination(id: destination.id, value: value))
         }
-        copy.confirmationLifetime = min(max(confirmationLifetime, 6), 30)
+        // Whole-device verification may need to wait for the fixed-IP fallback
+        // after a blocked primary probe. Physical network changes are still
+        // invalidated immediately by NetworkChangeMonitor.
+        copy.confirmationLifetime = 30
         return copy
     }
 }
@@ -192,13 +204,6 @@ public enum EgressControlEvaluator {
     ) -> EgressControlDecision {
         let configuration = configuration.normalized
         guard configuration.isEnabled else { return .allow }
-        let routeMode = routeMode(configuration: configuration, flow: flow)
-        guard let routeMode else { return .allow }
-        if routeMode == .direct { return .allow }
-        if routeMode == .blocked { return .drop(reason: "Приложение заблокировано правилом") }
-        if routeMode == .orbitSOCKS {
-            return .drop(reason: "Транспорт Orbit SOCKS ещё не установлен")
-        }
         guard snapshot.state == .trusted else {
             return .drop(reason: snapshot.reason.isEmpty ? "Выход не подтверждён" : snapshot.reason)
         }
@@ -219,45 +224,18 @@ public enum EgressControlEvaluator {
         configuration: EgressControlConfiguration,
         flow: EgressFlowDescriptor
     ) -> Bool {
-        routeMode(configuration: configuration, flow: flow) != nil
+        configuration.normalized.isEnabled
     }
 
     public static func routeMode(
         configuration: EgressControlConfiguration,
         flow: EgressFlowDescriptor
     ) -> ApplicationRouteMode? {
-        let applicationIdentifier = flow.sourceApplicationIdentifier.map(normalize)
-        if let applicationIdentifier,
-           let application = configuration.applications.first(where: {
-               let configuredIdentifier = normalize($0.bundleIdentifier)
-               return applicationIdentifier == configuredIdentifier
-                   || applicationIdentifier.hasPrefix(configuredIdentifier + ".")
-           }) {
-            return application.routeMode
-        }
-        guard let remoteHost = flow.remoteHost.map(normalize), !remoteHost.isEmpty else {
-            return configuration.destinations.isEmpty ? nil : .trustedExit
-        }
-        return configuration.destinations.contains {
-            destinationMatches(rule: normalize($0.value), host: remoteHost)
-        } ? .trustedExit : nil
-    }
-
-    private static func destinationMatches(rule: String, host: String) -> Bool {
-        guard !rule.isEmpty else { return false }
-        if rule.hasPrefix("*.") {
-            let suffix = String(rule.dropFirst())
-            return host.hasSuffix(suffix) && host.count > suffix.count
-        }
-        if let cidr = IPv4CIDR(rule) {
-            return cidr.contains(host)
-        }
-        return host == rule || host.hasSuffix("." + rule)
+        configuration.normalized.isEnabled ? .trustedExit : nil
     }
 }
 
 public final class EgressControlStore: @unchecked Sendable {
-    public static let appGroupIdentifier = "group.io.orbit.connect"
     public static let developmentSuiteIdentifier = "io.orbit.connect.development"
     public static let configurationKey = "egress-control.configuration"
     public static let snapshotKey = "egress-control.snapshot"
@@ -277,7 +255,7 @@ public final class EgressControlStore: @unchecked Sendable {
         {
             self.defaults = UserDefaults(suiteName: Self.developmentSuiteIdentifier) ?? .standard
         } else {
-            self.defaults = UserDefaults(suiteName: Self.appGroupIdentifier) ?? .standard
+            self.defaults = .standard
         }
     }
 

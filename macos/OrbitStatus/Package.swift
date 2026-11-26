@@ -6,25 +6,30 @@ let package = Package(
     platforms: [.macOS(.v13)],
     products: [
         .executable(name: "OrbitStatus", targets: ["OrbitStatus"]),
+        .executable(name: "OrbitConnectAgent", targets: ["OrbitConnectAgent"]),
         .library(name: "OrbitConnectPolicy", targets: ["OrbitConnectPolicy"]),
+        .library(name: "OrbitConnectAgentProtocol", targets: ["OrbitConnectAgentProtocol"]),
     ],
     targets: [
         .target(name: "OrbitConnectPolicy"),
-        .target(
-            name: "OrbitConnectFilterExtension",
-            dependencies: ["OrbitConnectPolicy"],
-            path: "SystemExtension/Sources"
+        .target(name: "OrbitConnectAgentProtocol"),
+        .executableTarget(
+            name: "OrbitConnectAgent",
+            dependencies: ["OrbitConnectAgentProtocol"]
         ),
         .executableTarget(
             name: "OrbitStatus",
-            dependencies: ["OrbitConnectPolicy"]
+            dependencies: [
+                "OrbitConnectPolicy",
+                "OrbitConnectAgentProtocol",
+            ]
         ),
         .testTarget(
             name: "OrbitStatusTests",
             dependencies: [
                 "OrbitStatus",
                 "OrbitConnectPolicy",
-                "OrbitConnectFilterExtension",
+                "OrbitConnectAgentProtocol",
             ]
         ),
     ]

@@ -101,6 +101,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         observeWorkspaceChanges()
 
+        if CommandLine.arguments.contains("--enable-strict-control") {
+            model.egressControl.setEnabled(true)
+        }
+
         if OrbitRuntime.isDemo {
             DispatchQueue.main.async { [weak self] in
                 self?.showSettings()
@@ -396,7 +400,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert()
         alert.alertStyle = .critical
         alert.messageText = "Закрыть Orbit Connect?"
-        alert.informativeText = "Контроль доверенного выхода включён. Перед закрытием Orbit Connect отключит все правила сетевого контроля. Введите код \(code), чтобы подтвердить действие."
+        alert.informativeText = "Контроль доверенного выхода включён. Перед закрытием Orbit Connect снимет собственную системную блокировку, и внешний трафик снова станет доступен без проверки конечного IP. Введите код \(code), чтобы подтвердить действие."
         alert.addButton(withTitle: "Закрыть")
         alert.addButton(withTitle: "Отменить")
         alert.buttons.first?.hasDestructiveAction = true
@@ -425,8 +429,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func showTerminationFailure(_ error: Error) {
         let alert = NSAlert()
         alert.alertStyle = .critical
-        alert.messageText = "Не удалось отключить сетевой контроль"
-        alert.informativeText = "Orbit Connect продолжает работать, чтобы правила не остались в неопределённом состоянии. \(error.localizedDescription)"
+        alert.messageText = "Не удалось выключить системный контроль"
+        alert.informativeText = "Orbit Connect продолжает работать, чтобы блокировка сети не осталась в неопределённом состоянии. \(error.localizedDescription)"
         alert.addButton(withTitle: "Готово")
         NSApplication.shared.activate(ignoringOtherApps: true)
         alert.runModal()

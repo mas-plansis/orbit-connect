@@ -168,8 +168,8 @@ struct OrbitAPIClient {
     private let session: URLSession
 
     private static let publicIPAddressURLs = [
-        URL(string: "https://api.ipify.org")!,
         URL(string: "https://1.1.1.1/cdn-cgi/trace")!,
+        URL(string: "https://api.ipify.org")!,
     ]
 
     init(session: URLSession = .shared) {
