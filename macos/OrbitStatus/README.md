@@ -1,6 +1,6 @@
 # Orbit Connect для macOS
 
-Версия приложения: 0.1.16.
+Версия приложения: 0.1.17.
 
 Приложение живёт в строке меню macOS и показывает:
 
@@ -35,16 +35,21 @@ Orbit узнаёт связанное устройство, даже если е
 приложения, режимы и адреса сохраняются. Если фильтр отключить не удалось, выход
 отменяется и пользователь получает явную ошибку.
 
-Для разработки приложение и вложенный системный компонент собираются командой:
+Локальная ad-hoc сборка приложения создаётся командой:
 
 ```sh
 cd macos/OrbitStatus
 ./scripts/build-app.sh
 ```
 
-Ad-hoc подпись подтверждает только корректный состав локальной сборки. Для
-активации Content Filter на пользовательском Mac нужны доверенная подпись,
-разрешённые Apple entitlements Network Extension и System Extension, а также
-подходящие provisioning profiles приложения и расширения. Они передаются скрипту
-через `CODESIGN_IDENTITY`, `APP_PROVISIONING_PROFILE` и
-`SYSTEM_EXTENSION_PROVISIONING_PROFILE`.
+Ad-hoc пакет не включает Content Filter: macOS не запускает System
+Extension с защищёнными entitlement после ad-hoc подписи. Такая сборка
+показывает, что сетевой фильтр не установлен, и не сообщает о ложной
+активной защите.
+
+Для включения Content Filter нужны доверенная Apple-подпись, разрешённые
+Network Extension и System Extension entitlement и оба provisioning profile.
+Они передаются одновременно через `CODESIGN_IDENTITY`,
+`APP_PROVISIONING_PROFILE` и `SYSTEM_EXTENSION_PROVISIONING_PROFILE`. Скрипт
+отклонит неполный набор параметров, чтобы не создать незапускаемый
+пакет.
