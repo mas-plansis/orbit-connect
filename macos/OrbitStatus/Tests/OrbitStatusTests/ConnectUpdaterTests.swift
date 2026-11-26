@@ -216,4 +216,69 @@ final class ConnectUpdaterTests: XCTestCase {
             XCTAssertThrowsError(try ConnectUpdater.validateSource(url))
         }
     }
+
+    func testDeferredReplacementMovesPreparedApplicationIntoPlace() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let current = root.appendingPathComponent("OrbitConnect.app", isDirectory: true)
+        let stagedRoot = root.appendingPathComponent("update", isDirectory: true)
+        let staged = stagedRoot.appendingPathComponent("OrbitConnect.app", isDirectory: true)
+        let backup = root.appendingPathComponent(
+            ".OrbitConnect-previous-test.app",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: current, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: staged, withIntermediateDirectories: true)
+        try Data("old".utf8).write(to: current.appendingPathComponent("version"))
+        try Data("new".utf8).write(to: staged.appendingPathComponent("version"))
+        let plan = ConnectUpdateInstallationPlan(
+            currentApplicationURL: current,
+            stagedApplicationURL: staged,
+            backupApplicationURL: backup,
+            workDirectoryURL: stagedRoot,
+            sourceProcessIdentifier: 0
+        )
+
+        try ConnectUpdater.replaceApplication(using: plan)
+
+        XCTAssertEqual(
+            try String(contentsOf: current.appendingPathComponent("version")),
+            "new"
+        )
+        XCTAssertEqual(
+            try String(contentsOf: backup.appendingPathComponent("version")),
+            "old"
+        )
+    }
+
+    func testDeferredReplacementRestoresCurrentApplicationWhenMoveFails() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let current = root.appendingPathComponent("OrbitConnect.app", isDirectory: true)
+        let stagedRoot = root.appendingPathComponent("update", isDirectory: true)
+        let staged = stagedRoot.appendingPathComponent("missing.app", isDirectory: true)
+        let backup = root.appendingPathComponent(
+            ".OrbitConnect-previous-test.app",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: current, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: stagedRoot, withIntermediateDirectories: true)
+        try Data("old".utf8).write(to: current.appendingPathComponent("version"))
+        let plan = ConnectUpdateInstallationPlan(
+            currentApplicationURL: current,
+            stagedApplicationURL: staged,
+            backupApplicationURL: backup,
+            workDirectoryURL: stagedRoot,
+            sourceProcessIdentifier: 0
+        )
+
+        XCTAssertThrowsError(try ConnectUpdater.replaceApplication(using: plan))
+        XCTAssertEqual(
+            try String(contentsOf: current.appendingPathComponent("version")),
+            "old"
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backup.path))
+    }
 }

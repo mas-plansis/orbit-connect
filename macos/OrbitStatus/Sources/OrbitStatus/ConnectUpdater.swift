@@ -1,5 +1,6 @@
 import AppKit
 import CryptoKit
+import Darwin
 import Foundation
 
 enum ConnectUpdateError: LocalizedError {
@@ -34,16 +35,24 @@ enum ConnectUpdateError: LocalizedError {
     }
 }
 
-struct InstalledConnectUpdate {
-    let applicationURL: URL
-    let backupURL: URL
+struct PreparedConnectUpdate {
+    let installerURL: URL
+    let planURL: URL
+}
+
+struct ConnectUpdateInstallationPlan: Codable {
+    let currentApplicationURL: URL
+    let stagedApplicationURL: URL
+    let backupApplicationURL: URL
+    let workDirectoryURL: URL
+    let sourceProcessIdentifier: Int32
 }
 
 struct ConnectUpdater {
     private static let maximumPackageSize: Int64 = 128 * 1024 * 1024
     private static let maximumChecksumSize: Int64 = 1024 * 1024
 
-    func install(_ update: ConnectUpdate) async throws -> InstalledConnectUpdate {
+    func install(_ update: ConnectUpdate) async throws -> PreparedConnectUpdate {
         try Self.validateSource(update.downloadURL)
         try Self.validateSource(update.checksumURL)
 
@@ -79,7 +88,7 @@ struct ConnectUpdater {
         try Self.rejectSymbolicLinks(in: candidate)
         try Self.run("/usr/bin/codesign", arguments: ["--verify", "--deep", "--strict", candidate.path])
 
-        return try Self.replaceCurrentApplication(with: candidate)
+        return try Self.prepareCurrentApplication(with: candidate)
     }
 
     static func validateSource(_ url: URL) throws {
@@ -183,33 +192,165 @@ struct ConnectUpdater {
         }
     }
 
-    private static func replaceCurrentApplication(with candidate: URL) throws -> InstalledConnectUpdate {
+    private static func prepareCurrentApplication(with candidate: URL) throws -> PreparedConnectUpdate {
         let fileManager = FileManager.default
         let current = Bundle.main.bundleURL.standardizedFileURL
         guard current.pathExtension == "app",
-              !current.path.contains("/AppTranslocation/")
+              !current.path.contains("/AppTranslocation/"),
+              let executable = Bundle.main.executableURL
         else {
             throw ConnectUpdateError.unsupportedLocation
         }
-        let parent = current.deletingLastPathComponent()
-        let staged = parent.appendingPathComponent(".OrbitConnect-update-\(UUID().uuidString).app")
-        let backup = parent.appendingPathComponent(".OrbitConnect-previous.app")
+
+        let identifier = UUID().uuidString
+        let root = updateSupportDirectory()
+            .appendingPathComponent(identifier, isDirectory: true)
+        let staged = root.appendingPathComponent("OrbitConnect.app", isDirectory: true)
+        let installer = root.appendingPathComponent("OrbitConnectUpdateInstaller")
+        let planURL = root.appendingPathComponent("installation.json")
+        let backup = current.deletingLastPathComponent()
+            .appendingPathComponent(".OrbitConnect-previous-\(identifier).app")
+        let plan = ConnectUpdateInstallationPlan(
+            currentApplicationURL: current,
+            stagedApplicationURL: staged,
+            backupApplicationURL: backup,
+            workDirectoryURL: root,
+            sourceProcessIdentifier: ProcessInfo.processInfo.processIdentifier
+        )
+
         do {
-            try? fileManager.removeItem(at: staged)
+            try fileManager.createDirectory(
+                at: root,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
             try fileManager.copyItem(at: candidate, to: staged)
-            try? fileManager.removeItem(at: backup)
-            try fileManager.moveItem(at: current, to: backup)
-            do {
-                try fileManager.moveItem(at: staged, to: current)
-            } catch {
-                try? fileManager.moveItem(at: backup, to: current)
-                throw error
-            }
+            try fileManager.copyItem(at: executable, to: installer)
+            try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: installer.path)
+            let data = try JSONEncoder().encode(plan)
+            try data.write(to: planURL, options: [.atomic])
+            UpdateInstallationLog.write("Update prepared for deferred installation")
         } catch {
-            try? fileManager.removeItem(at: staged)
+            try? fileManager.removeItem(at: root)
+            UpdateInstallationLog.write(error, context: "Unable to prepare update")
             throw ConnectUpdateError.installationFailed
         }
-        return InstalledConnectUpdate(applicationURL: current, backupURL: backup)
+        return PreparedConnectUpdate(
+            installerURL: installer,
+            planURL: planURL
+        )
+    }
+
+    static func completePreparedInstallation(planURL: URL) -> Int32 {
+        do {
+            let data = try Data(contentsOf: planURL)
+            let plan = try JSONDecoder().decode(ConnectUpdateInstallationPlan.self, from: data)
+            try validate(plan, planURL: planURL)
+            try waitForProcessToExit(plan.sourceProcessIdentifier)
+            try replaceApplication(using: plan)
+            do {
+                try launchApplication(at: plan.currentApplicationURL)
+            } catch {
+                try restorePreviousApplication(using: plan)
+                try? launchApplication(at: plan.currentApplicationURL)
+                throw error
+            }
+            try? FileManager.default.removeItem(at: plan.backupApplicationURL)
+            UpdateInstallationLog.write("Updated application launched successfully")
+            try? FileManager.default.removeItem(at: plan.workDirectoryURL)
+            return EXIT_SUCCESS
+        } catch {
+            UpdateInstallationLog.write(error, context: "Deferred installation failed")
+            return EXIT_FAILURE
+        }
+    }
+
+    static func replaceApplication(using plan: ConnectUpdateInstallationPlan) throws {
+        let fileManager = FileManager.default
+        try? fileManager.removeItem(at: plan.backupApplicationURL)
+        try fileManager.moveItem(
+            at: plan.currentApplicationURL,
+            to: plan.backupApplicationURL
+        )
+        do {
+            try fileManager.moveItem(
+                at: plan.stagedApplicationURL,
+                to: plan.currentApplicationURL
+            )
+        } catch {
+            try? fileManager.moveItem(
+                at: plan.backupApplicationURL,
+                to: plan.currentApplicationURL
+            )
+            throw error
+        }
+    }
+
+    private static func restorePreviousApplication(
+        using plan: ConnectUpdateInstallationPlan
+    ) throws {
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: plan.currentApplicationURL.path) {
+            try fileManager.removeItem(at: plan.currentApplicationURL)
+        }
+        try fileManager.moveItem(
+            at: plan.backupApplicationURL,
+            to: plan.currentApplicationURL
+        )
+    }
+
+    private static func validate(
+        _ plan: ConnectUpdateInstallationPlan,
+        planURL: URL
+    ) throws {
+        let current = plan.currentApplicationURL.standardizedFileURL
+        let staged = plan.stagedApplicationURL.standardizedFileURL
+        let backup = plan.backupApplicationURL.standardizedFileURL
+        let root = plan.workDirectoryURL.standardizedFileURL
+        guard current.pathExtension == "app",
+              staged.pathExtension == "app",
+              backup.pathExtension == "app",
+              backup.deletingLastPathComponent() == current.deletingLastPathComponent(),
+              backup.lastPathComponent.hasPrefix(".OrbitConnect-previous-"),
+              staged.path.hasPrefix(root.path + "/"),
+              planURL.standardizedFileURL.deletingLastPathComponent() == root,
+              !current.path.contains("/AppTranslocation/")
+        else {
+            throw ConnectUpdateError.installationFailed
+        }
+    }
+
+    private static func waitForProcessToExit(_ processIdentifier: Int32) throws {
+        let deadline = Date().addingTimeInterval(30)
+        while Date() < deadline {
+            errno = 0
+            if Darwin.kill(pid_t(processIdentifier), 0) != 0, errno == ESRCH {
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        throw ConnectUpdateError.installationFailed
+    }
+
+    private static func launchApplication(at application: URL) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = ["-n", application.path]
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw ConnectUpdateError.installationFailed
+        }
+    }
+
+    private static func updateSupportDirectory() -> URL {
+        let base = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? FileManager.default.temporaryDirectory
+        return base
+            .appendingPathComponent("Orbit Connect", isDirectory: true)
+            .appendingPathComponent("Updates", isDirectory: true)
     }
 
     private static func run(_ executable: String, arguments: [String]) throws {
@@ -226,6 +367,45 @@ struct ConnectUpdater {
         }
         guard process.terminationStatus == 0 else {
             throw ConnectUpdateError.invalidArchive
+        }
+    }
+}
+
+private enum UpdateInstallationLog {
+    static func write(_ message: String) {
+        writeLine("\(ISO8601DateFormatter().string(from: Date())) \(message)")
+    }
+
+    static func write(_ error: Error, context: String) {
+        let value = error as NSError
+        write("\(context): \(value.domain) \(value.code): \(value.localizedDescription)")
+    }
+
+    private static func writeLine(_ line: String) {
+        let fileManager = FileManager.default
+        let base = fileManager.urls(for: .libraryDirectory, in: .userDomainMask).first
+            ?? fileManager.temporaryDirectory
+        let directory = base
+            .appendingPathComponent("Logs", isDirectory: true)
+            .appendingPathComponent("Orbit Connect", isDirectory: true)
+        let file = directory.appendingPathComponent("update.log")
+        do {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            let size = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            if size > 1_048_576 {
+                try? fileManager.removeItem(at: file)
+            }
+            let data = Data((line + "\n").utf8)
+            if !fileManager.fileExists(atPath: file.path) {
+                try data.write(to: file, options: [.atomic])
+                return
+            }
+            let handle = try FileHandle(forWritingTo: file)
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            try handle.write(contentsOf: data)
+        } catch {
+            // The updater must not fail only because diagnostics cannot be written.
         }
     }
 }

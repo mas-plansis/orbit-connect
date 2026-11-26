@@ -486,9 +486,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         Task {
             do {
-                let installed = try await ConnectUpdater().install(update)
+                let prepared = try await ConnectUpdater().install(update)
                 progress.window.orderOut(nil)
-                restartAfterUpdate(installed)
+                restartAfterUpdate(prepared, update: update)
             } catch {
                 progress.window.orderOut(nil)
                 showUpdateFailure(error, update: update)
@@ -496,33 +496,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func restartAfterUpdate(_ installed: InstalledConnectUpdate) {
-        singleInstanceGuard?.release()
-        singleInstanceGuard = nil
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.createsNewApplicationInstance = true
-        NSWorkspace.shared.openApplication(
-            at: installed.applicationURL,
-            configuration: configuration
-        ) { [weak self] _, error in
-            Task { @MainActor in
-                if error == nil {
-                    try? FileManager.default.removeItem(at: installed.backupURL)
-                    self?.terminationApproved = true
-                    NSApplication.shared.terminate(nil)
-                    return
-                }
-                try? FileManager.default.removeItem(at: installed.applicationURL)
-                try? FileManager.default.moveItem(
-                    at: installed.backupURL,
-                    to: installed.applicationURL
-                )
-                self?.singleInstanceGuard = SingleInstanceGuard.acquire()
-                self?.showUpdateFailure(
-                    ConnectUpdateError.installationFailed,
-                    update: nil
-                )
-            }
+    private func restartAfterUpdate(
+        _ prepared: PreparedConnectUpdate,
+        update: ConnectUpdate
+    ) {
+        let installer = Process()
+        installer.executableURL = prepared.installerURL
+        installer.arguments = ["--complete-update", prepared.planURL.path]
+        do {
+            try installer.run()
+            singleInstanceGuard?.release()
+            singleInstanceGuard = nil
+            terminationApproved = true
+            NSApplication.shared.terminate(nil)
+        } catch {
+            showUpdateFailure(error, update: update)
         }
     }
 
@@ -688,6 +676,13 @@ private final class SingleInstanceGuard {
 @main
 enum OrbitStatusApplication {
     static func main() {
+        let arguments = CommandLine.arguments
+        if arguments.count == 3, arguments[1] == "--complete-update" {
+            let status = ConnectUpdater.completePreparedInstallation(
+                planURL: URL(fileURLWithPath: arguments[2])
+            )
+            exit(status)
+        }
         let application = NSApplication.shared
         let delegate = AppDelegate()
         application.delegate = delegate
