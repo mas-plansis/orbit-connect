@@ -35,8 +35,6 @@ final class EgressControlScreenshotTests: XCTestCase {
         let model = OrbitStatusModel(isDemo: true)
         let sections: [SettingsSection] = [
             .control,
-            .applications,
-            .destinations,
             .application,
         ]
         let applicationWithEvents = model.egressControl.configuration.applications

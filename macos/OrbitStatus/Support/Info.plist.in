@@ -15,7 +15,6 @@
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>LSUIElement</key><true/>
     <key>NSLocalNetworkUsageDescription</key><string>Orbit подключается к локальной панели роутера для проверки маршрута и связи устройства.</string>
-    <key>NSSystemExtensionUsageDescription</key><string>Orbit Connect блокирует выбранный трафик, пока домашний Orbit не подтвердит доверенный статический выход.</string>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsLocalNetworking</key><true/>

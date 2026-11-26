@@ -88,10 +88,10 @@ struct EgressControlSettingsView: View {
 
     private func sidebar(compact: Bool) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
+            VStack(alignment: .leading, spacing: compact ? 28 : 24) {
                 navigationGroup(
                     "Контроль",
-                    sections: [.control, .applications, .destinations],
+                    sections: [.control],
                     compact: compact
                 )
                 navigationGroup(
@@ -116,10 +116,7 @@ struct EgressControlSettingsView: View {
         compact: Bool
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            if compact {
-                Divider()
-                    .padding(.horizontal, 7)
-            } else {
+            if !compact {
                 Text(title.uppercased())
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.secondary.opacity(0.72))
@@ -198,8 +195,6 @@ struct EgressControlSettingsView: View {
     private var selectedSectionContent: some View {
         switch selectedSection {
         case .control: controlSection
-        case .applications: applicationsSection
-        case .destinations: destinationsSection
         case .application: applicationSection
         }
     }
@@ -228,10 +223,25 @@ struct EgressControlSettingsView: View {
                 .toggleStyle(.switch)
                 .tint(OrbitConnectTheme.accent)
             }
-            Text("Выбранные приложения и адреса получают доступ только после подтверждения домашним Orbit. При смене сети доступ блокируется до новой проверки.")
+            Text("Весь внешний трафик этого Mac разрешается только после подтверждения доверенного конечного публичного IP. При смене сети трафик сначала блокируется, затем Connect выполняет новую проверку.")
                 .font(OrbitConnectTheme.compactFont)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 10) {
+                Image(systemName: "gearshape.2.fill")
+                    .foregroundStyle(OrbitConnectTheme.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(control.systemAgentTitle)
+                        .font(OrbitConnectTheme.compactFont.weight(.semibold))
+                    Text("Внутренний агент Orbit Connect управляет только собственным PF-якорем. Отдельного приложения и интерфейса нет.")
+                        .font(OrbitConnectTheme.captionFont)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                systemAgentAction
+            }
+            .padding(12)
+            .background(OrbitConnectTheme.canvas, in: RoundedRectangle(cornerRadius: 12))
             HStack(spacing: 10) {
                 Circle().fill(statusColor).frame(width: 9, height: 9)
                 VStack(alignment: .leading, spacing: 2) {
@@ -246,6 +256,29 @@ struct EgressControlSettingsView: View {
             .background(statusColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
         }
         .settingsCard()
+    }
+
+    @ViewBuilder
+    private var systemAgentAction: some View {
+        switch control.filterState {
+        case .requiresInstallation:
+            Button("Установить") { control.promptToInstallSystemAgent() }
+                .buttonStyle(.borderedProminent)
+                .tint(OrbitConnectTheme.accent)
+        case .disabled, .failed:
+            if case .failed = control.filterState {
+                Button("Повторить") { control.retrySystemAgent() }
+                    .buttonStyle(.bordered)
+            } else {
+                Label("Готов", systemImage: "checkmark.circle.fill")
+                    .font(OrbitConnectTheme.captionFont.weight(.semibold))
+                    .foregroundStyle(.green)
+            }
+        case .installing:
+            ProgressView().controlSize(.small)
+        case .enabling, .enabled:
+            EmptyView()
+        }
     }
 
     private var routeCard: some View {
@@ -573,8 +606,6 @@ struct EgressControlSettingsView: View {
 }
 enum SettingsSection: String, CaseIterable, Identifiable {
     case control
-    case applications
-    case destinations
     case application
 
     var id: String { rawValue }
@@ -582,17 +613,13 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .control: return "Контроль выхода"
-        case .applications: return "Правила приложений"
-        case .destinations: return "Защищённые адреса"
         case .application: return "Параметры Connect"
         }
     }
 
     var subtitle: String {
         switch self {
-        case .control: return "Доверенный маршрут и строгая блокировка"
-        case .applications: return "Режимы доступа и наблюдаемые соединения"
-        case .destinations: return "Куда разрешён доступ только через Orbit"
+        case .control: return "Весь внешний трафик и доверенный конечный IP"
         case .application: return "Запуск и поведение приложения"
         }
     }
@@ -600,8 +627,6 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .control: return "lock.shield"
-        case .applications: return "app.badge.checkmark"
-        case .destinations: return "point.3.connected.trianglepath.dotted"
         case .application: return "gearshape"
         }
     }

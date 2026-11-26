@@ -374,7 +374,8 @@ struct ApplicationPickerView: View {
         for application in applications where selectedIdentifiers.contains(application.bundleIdentifier) {
             control.addApplication(
                 bundleIdentifier: application.bundleIdentifier,
-                displayName: application.displayName
+                displayName: application.displayName,
+                applicationPath: application.url?.path
             )
         }
         close()
